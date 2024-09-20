@@ -3,7 +3,9 @@ import numpy as np
 from tqdm import tqdm 
 import h5py as h5 
 import os 
-filename = "./data/output_new.root"
+filename = "/Users/bsmithers/software/mPMT/build/output_365.root"
+#filename = "./data/output_new.root"
+wavelen = filename.split("_")[-1].split(".")[0]
 
 data = uproot.open(filename)
 
@@ -14,7 +16,7 @@ final_x = []
 final_y = []
 final_z = []
 ids = []
-newname = "processed_optics.hdf5"
+newname = "processed_optics_{}.hdf5".format(wavelen)
 if os.path.exists(newname):
     os.remove(newname)
 datafile = h5.File(newname, 'w')
