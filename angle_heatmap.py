@@ -17,18 +17,23 @@ if __name__=="__main__":
 
     pre_pts = np.array([prex, prey, prez]).T
     unique_pre_pts = np.unique(pre_pts, axis=0)
+    
+    if len(test)>12:
+        offset = 1
+    else:
+        offset = 0
+    print("using offset {}".format(offset))
 
-
-    xpos = test[6]
-    ypos = test[7]
-    zpos = test[8]
+    xpos = test[6+offset]
+    ypos = test[7+offset]
+    zpos = test[8+offset]
 
     final_r = np.sqrt(xpos**2 + ypos**2)
     bad = np.isnan(final_r)
 
-    vx = test[9]*-1
-    vy = test[10]*-1
-    vz = test[11]*-1
+    vx = test[9+offset]*-1
+    vy = test[10+offset]*-1
+    vz = test[11 + offset]*-1
 
 
     # we need to get the direction along the dynode 
