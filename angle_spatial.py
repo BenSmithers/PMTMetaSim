@@ -6,16 +6,19 @@ from otherdata import load_file
 
 from math import pi 
 
-g4bins  = np.arange(-0.35,0.35,0.025)
+g4bins  = np.arange(-0.35,0.35,0.0125)
 
 stepsize = g4bins[1]-g4bins[0]
 bins = np.linspace(g4bins[0] - 0.5*stepsize, g4bins[-1]+0.5*stepsize, len(g4bins)+1)
 
+def spine_penalty_func(xs):
+    SCALE = 0.02
+    dscale =np.exp(-(np.abs(xs)/SCALE)**1)
+    return dscale 
 
 if __name__=="__main__":
 
     test = load_file(sys.argv[1])
-
 
     prex = test[0]
     prey = test[1]
@@ -47,29 +50,52 @@ if __name__=="__main__":
 
     # assume that the dynode is aligned along the Y-axis 
 
-    
-    dyn_x = -1*np.ones_like(xpos)
-    dyn_x[xpos<0]*=-1 
+
+    dyn_vector_z = np.ones_like(xpos)
+    dyn_vector_y = 0*dyn_vector_z
+    dyn_vector_x = np.ones_like(xpos)
+    dyn_vector_z[xpos<0] = -1
+    hit_angle = (dyn_vector_x*vx + dyn_vector_y*vy + dyn_vector_z*vz)/(np.sqrt(vx**2 + vy**2 + vz**2)*np.sqrt(dyn_vector_x**2 + dyn_vector_y**2 + dyn_vector_z**2))
+    hit_angle = np.arccos(hit_angle)*180/pi 
+    hit_angle[hit_angle>90] = 180-hit_angle[hit_angle>90] 
+
+    print("hit angle range {} - {}".format(min(hit_angle), max(hit_angle)))
 
     significance = np.ones_like(vx)
-    should_eval = np.ones_like(dyn_x).astype(bool)
 
+    
 
-    these_thetas = np.arctan(dyn_x*vx[should_eval]/vz[should_eval])*180/pi
+    these_thetas = np.arctan(np.abs(vx)/ np.abs(vz)) 
+
+    # positive side and moving towards negative
+    # or negative side and moving towards positive 
+    negative = np.logical_or(np.logical_and(xpos<0, vx>0), np.logical_and( xpos>0, vx<0 ))
+    these_thetas[negative]*=-1
+
+    spine_penalty = spine_penalty_func(xpos)
+    spine_penalty /= np.max(spine_penalty)
+    spine_penalty = 1-spine_penalty
+    
+    these_thetas = these_thetas*(1-spine_penalty) + 0.5*(spine_penalty*pi/2 + these_thetas)
+
+    #these_thetas = these_thetas*(1-spine_penalty) + 0.5*(spine_penalty*pi/2 + these_thetas)
+
     these_phis = np.abs(np.arctan(vx/vy))*180/pi
 
     keep = np.logical_not(np.isnan(these_thetas))
 
+    these_thetas*=90
 
-    data = np.histogram2d(prex[keep], prey[keep], bins=(bins, bins), weights=xpos[keep])[0]
+
+    plt.clf()
+    data = np.histogram2d(prex[keep], prey[keep], bins=(bins, bins), weights=spine_penalty[keep])[0]
     data /= np.histogram2d(prex[keep], prey[keep], bins=(bins, bins))[0]
-
-    plt.pcolormesh(bins, bins, data.T, vmin=-.015, vmax=0.015, cmap="RdBu")
+    plt.pcolormesh(bins, bins, data.T )#, vmin=-90, vmax=90, cmap="coolwarm")
     plt.xlabel("X [m]",size=14)
     plt.ylabel("Y [m]", size=14)
     lbl = plt.colorbar()
-    lbl.set_label("X Position on Dynode")
-    plt.savefig("./plots/xpos_dynode_distrib.png", dpi=400)
+    lbl.set_label("Avg Zenith")
+    plt.savefig("./plots/zenith_dynode_distrib.png", dpi=400)
     plt.show()
 
     plt.clf()
@@ -81,6 +107,28 @@ if __name__=="__main__":
     lbl = plt.colorbar()
     lbl.set_label("Avg Zenith")
     plt.savefig("./plots/zenith_dynode_distrib.png", dpi=400)
+    plt.show()
+
+    data = np.histogram2d(prex[keep], prey[keep], bins=(bins, bins), weights=xpos[keep])[0]
+    data /= np.histogram2d(prex[keep], prey[keep], bins=(bins, bins))[0]
+    plt.clf()
+    plt.pcolormesh(bins, bins, data.T, vmin=-.015, vmax=0.015, cmap="RdBu")
+    plt.xlabel("X [m]",size=14)
+    plt.ylabel("Y [m]", size=14)
+    lbl = plt.colorbar()
+    lbl.set_label("X Position on Dynode")
+    plt.savefig("./plots/xpos_dynode_distrib.png", dpi=400)
+    plt.show()
+
+    plt.clf()
+    data = np.histogram2d(prex[keep], prey[keep], bins=(bins, bins), weights=hit_angle[keep])[0]
+    data /= np.histogram2d(prex[keep], prey[keep], bins=(bins, bins))[0]
+    plt.pcolormesh(bins, bins, data.T, vmin=-90, vmax=90, cmap="coolwarm")
+    plt.xlabel("X [m]",size=14)
+    plt.ylabel("Y [m]", size=14)
+    lbl = plt.colorbar()
+    lbl.set_label("Avg Hit Angle")
+    plt.savefig("./plots/hit_distrib.png", dpi=400)
     plt.show()
 
 

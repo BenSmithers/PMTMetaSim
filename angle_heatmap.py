@@ -41,18 +41,22 @@ if __name__=="__main__":
     # assume that the dynode is aligned along the Y-axis 
 
     
-    dyn_x = -1*np.ones_like(xpos)
-    dyn_x[xpos<0]*=-1 
+    dynode_right = np.ones_like(xpos, dtype=bool)
+    dynode_right[xpos<0] = False
 
     significance = np.ones_like(vx)
-    should_eval = np.ones_like(dyn_x).astype(bool)
+    should_eval = np.ones_like(dynode_right).astype(bool)
 
+    these_thetas = np.arctan(np.abs(vx[should_eval])/ np.abs(vz[should_eval])) 
+    # positive side and moving towards negative
+    # or negative side and moving towards positive 
+    negative = np.logical_or(np.logical_and(xpos<0, vx>0), np.logical_and( xpos>0, vx<0 ))
+    these_thetas[negative]*=-1
 
-    these_thetas = np.arctan(dyn_x*vx[should_eval]/vz[should_eval])
     these_phis = np.abs(np.arctan(vx/vy))
 
     
-
+    print("{} - {}".format(min(these_thetas), max(these_thetas)))   
     print("{} - {}".format(min(these_phis), max(these_phis)))
 
     angles = np.linspace(-pi/2, pi/2, 100)

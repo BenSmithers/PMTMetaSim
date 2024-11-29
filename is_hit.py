@@ -3,8 +3,9 @@ import numpy as np
 import os 
 from math import pi
 import h5py as h5
+
 from scipy.interpolate import interp1d, RectBivariateSpline
-from utils import Irregular2DInterpolator
+from utils import load_dyn_odds, new_dyn_odds, load_newest_dyn, perlin
 
 import matplotlib.pyplot as plt 
 from mpl_toolkits import mplot3d
@@ -12,13 +13,19 @@ from mpl_toolkits import mplot3d
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import axes3d
 
+from load_dynode import build_interpolator
+
 import pandas as pd
+
+from pmtstupid import dumb_photonics
 
 
 DEBUG = False
 
+FUZZ = 1+perlin(61)*2/5
 
 g4bins  = np.arange(-0.305,0.305,0.01)
+print(len(g4bins))
 
 stepsize = g4bins[1]-g4bins[0]
 bins = np.linspace(g4bins[0] - 0.5*stepsize, g4bins[-1]+0.5*stepsize, len(g4bins)+1)
@@ -30,11 +37,27 @@ pmt_a = 0.254564663
 pmt_b = 0.254110205
 pmt_c = 0.186002389
 
-def prepare_photonics(norm = False, wavelen=365):
+def spine_penalty_func2(xs):
+    SCALE = 0.025
+    base = np.sin(xs/SCALE)
+    base[xs/SCALE > pi] = -1
+    base[xs/SCALE < -pi] = -1 
+    base += 1.0
+    base /= 8.0
+    base += 0.75
+    return base 
+    
+def spine_penalty_func(xs):
+    SCALE = 0.02
+    dscale =np.exp(-(np.abs(xs)/SCALE)**1)
+    return dscale 
+
+
+def prepare_photonics(norm = False, wavelen=405):
     """
         Prepares and returns a PE-production tensor for particles generated at a given location 
     """
-    _filename = "./processed_optics_new.hdf5".format(wavelen)
+    _filename = "./processed_optics_{}.hdf5".format(wavelen)
     N_PHOT = 10000
 
     data = h5.File(_filename, 'r')
@@ -45,32 +68,51 @@ def prepare_photonics(norm = False, wavelen=365):
     hit_y =  np.array(data["final_y"])/1000
     hit_z =  np.array(data["final_z"])/1000
 
-    czen = (pi/2) -np.arctan(hit_z/np.sqrt(hit_x**2 + hit_y**2))
+    czen =np.arctan(hit_z/np.sqrt(hit_x**2 + hit_y**2))
     aziumuth = np.arctan2(hit_y, hit_x)
+
+    czen_widths = pmt_costheta[1:] - pmt_costheta[:-1]
+    azi_widths = pmt_azimuth[1:] - pmt_azimuth[:-1]
+    czen_centers = 0.5*(pmt_costheta[1:] + pmt_costheta[:-1])
+    
     print("{} - {}".format(min(czen), max(czen)))
 
     # histogram all of the data 
     photons = np.histogramdd(
         sample = (
-            initial_x, initial_y, czen, aziumuth
+            initial_x, initial_y, hit_x, hit_y
         ),
         bins = (
-            bins, binsy,pmt_costheta, pmt_azimuth
-        )
+            bins, binsy, bins, binsy
+        ),
     )[0]
+    
+
+    if DEBUG:
+        phot_2d = np.histogram2d(hit_x, hit_y, bins=(bins, binsy))[0]
+        plt.gca().set_aspect('equal')
+        plt.pcolormesh(bins, binsy, phot_2d.T) #, vmin=0, vmax=10000)
+        plt.xlabel("X [m]", size=14)
+        plt.ylabel("Y [m]", size=14)
+        plt.show()
     prenorm = np.zeros_like(photons)
     # now, we normalize by the number of photons simulated at each initail-value pair 
     for ix in range(len(photons)):
         for iy in range(len(photons[0])):
             
-
-            prenorm[ix][iy] = photons[ix][iy]/N_PHOT
-
             
-            if DEBUG and ix%10==0 and iy%10==0:
+            prenorm[ix][iy] =photons[ix][iy]/N_PHOT
+            
+            if DEBUG : #and ix%11==0 and iy%11==0 :
                 if np.sum(photons[ix][iy])<1:
                     continue
-                plt.pcolormesh(bins, binsy,np.log10(photons[ix][iy]+1).T)
+                
+                # count good! 
+                n_above =np.sum( (prenorm[ix][iy]>0).astype(int) )
+                if n_above<120:
+                    continue
+
+                plt.pcolormesh(bins, binsy,np.log10(1+photons[ix][iy]))
                 plt.title("{} - {}".format(ix, iy))
                 plt.xlabel(r"$\theta_{hit}$ [rad]")
                 plt.ylabel("$\phi_{hit}$ [rad]")
@@ -83,45 +125,29 @@ def prepare_photonics(norm = False, wavelen=365):
 
 _photon_tensor = prepare_photonics(False)
 
-def load_dyn_odds():
-    data = np.loadtxt(
-        os.path.join(os.path.dirname(__file__), "data","second_gen_data","dyn_sim_geo.dat"),
-        delimiter=",",
-        comments="#"
-    ).T 
 
-    thetas = -1*np.arctan(data[1]/data[0])
-    odds = (data[2] + data[3]*0.1+ data[4]*0.01)/(data[2]+data[3]+data[4]) # odds of hitting first dynode
-
-    return interp1d( thetas, odds )
-
-def new_dyn_odds():
-    data = np.loadtxt(
-            os.path.join(os.path.dirname(__file__), "data","dyn_new.dat"),
-            delimiter=",",
-            comments="#"
-        ).T
-
-    thetas = data[0]*pi/180
-    phis = data[1]*pi/180
-    odds = (data[2] + data[3]*0.01 + data[4]*0.00)/(data[2]+data[3]+data[4])
-
-
-    i2d = Irregular2DInterpolator(
-        thetas, phis, odds
-    )
-    return i2d
-
-def process(filename, label, reload_photonics = -1):
-    if reload_photonics <0:
-        photon_tensor = _photon_tensor  # get teh 
+def process(filename, label, reload_photonics = -1, normy=1):
+    if False :
+        photon_tensor = dumb_photonics(bins, binsy)
     else:
-        photon_tensor = prepare_photonics(False, reload_photonics)
+        if reload_photonics <0:
+            photon_tensor = _photon_tensor  # get teh 
+        else:
+            photon_tensor = prepare_photonics(False, reload_photonics)
+
 
     test = load_file(filename) 
 
-    interpo = new_dyn_odds()
+    yield_x = np.array([0,22.5,40, 50, 60, 90, 90+30, 90+40, 90+50, 90+90-22.5, 180 ])
+    yield_x = 180.0 - yield_x
+    yield_x*=pi/180
+    yield_y = [1.3, 1.4, 1.6, 1.8, 1.88, 2, 1.88, 1.8, 1.6, 1.4, 1.3]
+
+
+    yield_interp = interp1d( yield_x, yield_y, bounds_error=False)
+    interpo = load_newest_dyn()
     interpo1d = load_dyn_odds()
+
 
     prex = test[0]
     prey = test[1]
@@ -152,70 +178,96 @@ def process(filename, label, reload_photonics = -1):
 
     # assume that the dynode is aligned along the Y-axis 
 
-    spine_penalty = np.abs(xpos) / 0.004
-    #spine_penalty = 1/spine_penalty
-    spine_penalty[spine_penalty>1] = 1.2
-    #spine_penalty += 0.5 
-    #spine_penalty/=1.5
+
+    spine_penalty = spine_penalty_func(xpos)
+    spine_penalty /= np.max(spine_penalty)
+    spine_penalty = 1-spine_penalty
+    print("sp {} - {}".format(min(spine_penalty), max(spine_penalty)))
 
 
-    dyn_x = -1*np.ones_like(xpos)
-    dyn_x[xpos<0]*=-1 
-
-    significance = np.ones_like(vx)
-    should_eval = np.ones_like(dyn_x).astype(bool)
 
 
-    these_thetas = np.arctan(dyn_x*vx[should_eval]/vz[should_eval])
-    these_phis = np.abs(np.arctan(vx/vy))
-    print( "{} - {}".format(np.min(these_phis) , np.max(these_phis)))
+    these_thetas = np.arctan(np.abs(vx)/ np.abs(vz)) 
+
+    # positive side and moving towards negative
+    # or negative side and moving towards positive 
+    negative = np.logical_or(np.logical_and(xpos<0, vx>0), np.logical_and( xpos>0, vx<0 ))
+    these_thetas[negative]*=-1
     
-    #these_odds = interpo(these_thetas, these_phis, grid=False)
-    #these_odds = interpo1d(these_thetas) #*np.cos(these_phis)
-    these_odds = np.ones_like(these_thetas)
+    these_thetas = these_thetas*(1-spine_penalty) + 0.5*(-0.25*spine_penalty*pi/2 + these_thetas)
 
-    # trying out a stupid-simple model
-    these_odds -= np.sin(these_thetas)*np.sin(these_phis)
-    these_odds[these_thetas < 0] = 1.0
-    these_odds /= np.max(these_odds)
+    # what if we actually manually shift the theta for spline-adjacet PEs 
+    print("theta range {} - {}".format(these_thetas.min(), these_thetas.max()))
 
-    significance[should_eval] = these_odds #*spine_penalty
+    
+    these_phis = np.abs(np.arctan(vx/vy))
+
+    # steeper angle bonus!
+    angle_bonus = 1.5*np.sin(these_phis)*(these_thetas + pi/4)**2
+    angle_bonus[angle_bonus<1.0] = 1.0
+
+    dyn_vector_z = np.ones_like(xpos)
+    dyn_vector_y = 0*dyn_vector_z
+    dyn_vector_x = np.ones_like(xpos)
+    dyn_vector_z[xpos<0] = -1
+
+    hit_angle = (dyn_vector_x*vx + dyn_vector_y*vy + dyn_vector_z*vz)/(np.sqrt(vx**2 + vy**2 + vz**2)*np.sqrt(dyn_vector_x**2 + dyn_vector_y**2 + dyn_vector_z**2))
+    hit_angle = np.arccos(hit_angle)
+
+    #hit_angle[hit_angle>90] = 180-hit_angle[hit_angle>90] 
+    yield_final = yield_interp( hit_angle )
+
+    print("yield angle range {} - {}".format(np.min(hit_angle), np.max(hit_angle)))
+
+    print( "phi range {} - {}".format(np.min(these_phis) , np.max(these_phis)))
+    
+    
+    coverage = (np.abs(np.cos(these_phis)) + np.abs(np.sin(these_phis)*np.cos(these_thetas + pi/4))*1.2)
+    coverage/=np.nanmax(coverage)
+
+    coverage = interpo(these_thetas, these_phis, grid=False)/yield_final
+
+
+    significance = coverage
 
     significance[bad] = 0.0
+    significance[np.isnan(significance)] = 0.0
 
     pzenith = (pi/2)-np.arctan(prez/np.sqrt(prex**2 + prey**2))
     pazimuth =np.arctan2(prey, prex)
 
-    sig_bin = np.histogram2d(pzenith, pazimuth, bins=(pmt_costheta, pmt_azimuth), weights=significance)[0]
-    counts =  np.histogram2d(pzenith, pazimuth, bins=(pmt_costheta, pmt_azimuth), weights=np.ones_like(significance))[0]
-    #sig_bin = np.histogram2d(prex, prey, bins=(bins, binsy), weights=significance)[0]
-    #counts =  np.histogram2d(prex, prey, bins=(bins, binsy) )[0]
-    sig_bin/=counts
-
-
-    #sig_bin[counts==0]=None 
-    #sig_bin = sig_bin 
+    #sig_bin = np.histogram2d(pzenith, pazimuth, bins=(pmt_costheta, pmt_azimuth), weights=significance)[0]
+    #counts =  np.histogram2d(pzenith, pazimuth, bins=(pmt_costheta, pmt_azimuth), weights=np.ones_like(significance))[0]
+    sig_bin = np.histogram2d(prex, prey, bins=(bins, binsy), weights=significance)[0]
+    counts =  np.histogram2d(prex, prey, bins=(bins, binsy))[0]
+    sig_bin /= counts
+    
+    sig_bin /= np.nanmax(sig_bin)
      
-    det_odds = np.zeros((len(bins), len(bins)))
-    for ix in range(len(photon_tensor)):
-        for iy in range(len(photon_tensor[ix])):
-            det_odds[ix][iy] = np.nansum(sig_bin*photon_tensor[ix][iy] )
+    #det_odds = sig_bin*photon_tensor
+    if True:
+        det_odds = np.ones((len(bins)-1, len(binsy)-1))
+        for ix in range(len(photon_tensor)):
+            for iy in range(len(photon_tensor[ix])):
+                det_odds[ix][iy] = np.nansum(photon_tensor[ix][iy]*sig_bin) #/np.nansum(counts*photon_tensor[ix][iy] )
 
-
-    det_odds/=np.max(det_odds)
+    det_odds /= np.nanmax(det_odds)
 
     #sig_bin/=np.max(sig_bin)
     plt.clf()
-    plt.pcolormesh(bins, binsy, sig_bin.T, cmap='inferno') #, vmin=0, vmax=1)
+    plt.pcolormesh(bins+0.417, binsy+0.297,det_odds.T, cmap='inferno', vmin=0, vmax=1)
     #plt.pcolormesh(bins, binsy, 0-sig_bin.T, cmap='RdBu') #, vmin=0, vmax=1)
     plt.xlabel("X [m]", size=14)
+    
+    
+    plt.title("Relative Avg. Charge",size=14)
     plt.ylabel("Y [m]")
     cbar = plt.colorbar()
-    cbar.set_label("Relative Det. Eff.")
+    cbar.set_label("Relative Avg. Charge.")
     plt.tight_layout()
     plt.gca().set_aspect('equal')
     plt.savefig("./plots/det_eff_{}.png".format(label), dpi=400)
-    #plt.show()
+    plt.show()
 
     return det_odds
 
@@ -236,30 +288,30 @@ def process(filename, label, reload_photonics = -1):
 
 
 if __name__=="__main__":
-    #process("./data/0mg_hemi_2eV.dat", "0mG")
-    #first = process("./data/0mG_slowpes.dat", "0mG_365nm", 365)
-    #second = process("./data/0mG_slowpes.dat", "0mG_405nm", 405)
-    #third = process("./data/0mG_slowpes.dat", "0mG_540nm", 540)
-
-    #print(np.nanmean(first/second))
-    #print(np.nanmean(first/third))
-    #process("./data/0mG_lamb_1eV_fixv.dat", label="cone")
-    #process("./data/500mG.dat", label="cone")
-    #process("./data/0mg_highstat_2isheV.txt", "0mG")
+ 
     #process("./data/somefield_highstat_2isheV.txt", "~mG")
     #process("./data/old_comsol_petraj/test_z500.txt", "z100")
     #process("./data/0mG_down_lamb.dat", "0mG")
     #process("./data/0mG_down_lamb_1eV.dat", "0mG")
-    process("./data/0mG_latest.dat", "0mG")
-    process("./data/250mG_z_latest.dat", "250mG_z")
-    process("./data/250mG_y_latest.dat", "250mG_y")
-    #process("./data/second_gen_data/250y_highstat_2isheV.txt", "250mG")
-    #process("./data/old_comsol_petraj/test_z500.txt", "500mG_z")
-    #process("./data/0mg_super_random_2isheV.dat", "500mG")
-    #process("./data/second_gen_data/0mg_lamb_checktime.dat", "0mG")
-    #process("./data/0mg_fieldgrad.dat", "test")
-    #process("./data/0mg_fieldgrad_more.dat", "test")
-    #process("./data/0mg_fieldgrad_250strong.dat", "test")
-    #process("./data/0mG_diffV_1eV_cone.dat", "0mG")
-    #process("./data/500mg_y_random.txt", "0mG")
-    #process("./data/0mG_highV_1eV_cone.dat", "")
+    #process("./data/second_gen_data/0mG_lamb_1eV_fixv.dat", "lamb0")
+    #process("./data/0mG_latest_lowest.dat", "low0")
+    #process("./data/0mG_latest_higher.dat", "high_400", 400)
+    #process("./data/0mG_latest_higher.dat", "high_540", 540)
+    #process("./data/0mG_latest_lowest.dat", "high_365", 365)
+    #process("./data/0mG_latest_lowest.dat", "high_410", 410)
+    #process("./data/0mG_hemi_shuffle_0.5ev.dat", "high_540", 540)
+    #process("./data/0mG_latest_lowest.dat", "high_410")
+    
+    baseline = process("./data/0mG_hemi_shuffle_0.5ev.dat", "0mG")
+    #process("./data/250mg_z_latest.dat", "250mG_z") #)
+    #process("./data/250mg_z_latest.dat", "250mG_z",normy=baseline)
+
+    process("./data/500ymG_hemi_shuffle_0.5ev.dat", "500mG_y")
+    #process("./data/600mGxz_WIDE.dat", "600mG_xz")# )
+    #process("./data/600mGy_WIDE.dat", "600mG_y")# )
+    #process("./data/600mGx_WIDE.dat", "600mG_x")# )
+    process("./data/250mg_z_latest.dat", label="250mG_z",normy=baseline)
+    process("./data/250mg_y_latest.dat", label="250mG_y",normy=baseline)
+    
+
+
