@@ -143,11 +143,7 @@ def process(filename, label, reload_photonics = -1, normy=1):
     yield_x*=pi/180
     yield_y = [1.3, 1.4, 1.6, 1.8, 1.88, 2, 1.88, 1.8, 1.6, 1.4, 1.3]
 
-
-    yield_interp = interp1d( yield_x, yield_y, bounds_error=False)
-    interpo = load_newest_dyn()
-    interpo1d = load_dyn_odds()
-
+    interpo = build_interpolator()
 
     prex = test[0]
     prey = test[1]
@@ -187,24 +183,19 @@ def process(filename, label, reload_photonics = -1, normy=1):
 
 
 
-    these_thetas = np.arctan(np.abs(vx)/ np.abs(vz)) 
 
-    # positive side and moving towards negative
-    # or negative side and moving towards positive 
-    negative = np.logical_or(np.logical_and(xpos<0, vx>0), np.logical_and( xpos>0, vx<0 ))
-    these_thetas[negative]*=-1
+    these_thetas = np.arctan( np.sqrt(vx**2 + vy**2)/np.abs(vz))*180/pi
+    these_thetas[ vy<0]*=-1
+
+
     
-    these_thetas = these_thetas*(1-spine_penalty) + 0.5*(-0.25*spine_penalty*pi/2 + these_thetas)
-
     # what if we actually manually shift the theta for spline-adjacet PEs 
     print("theta range {} - {}".format(these_thetas.min(), these_thetas.max()))
-
     
-    these_phis = np.abs(np.arctan(vx/vy))
+    # phi of 0 means all along x axis 
+    these_phis = np.abs(np.arctan(np.abs(vx)/np.abs(vy)))*180/pi
+    
 
-    # steeper angle bonus!
-    angle_bonus = 1.5*np.sin(these_phis)*(these_thetas + pi/4)**2
-    angle_bonus[angle_bonus<1.0] = 1.0
 
     dyn_vector_z = np.ones_like(xpos)
     dyn_vector_y = 0*dyn_vector_z
@@ -215,26 +206,16 @@ def process(filename, label, reload_photonics = -1, normy=1):
     hit_angle = np.arccos(hit_angle)
 
     #hit_angle[hit_angle>90] = 180-hit_angle[hit_angle>90] 
-    yield_final = yield_interp( hit_angle )
 
-    print("yield angle range {} - {}".format(np.min(hit_angle), np.max(hit_angle)))
+    
 
     print( "phi range {} - {}".format(np.min(these_phis) , np.max(these_phis)))
     
-    
-    coverage = (np.abs(np.cos(these_phis)) + np.abs(np.sin(these_phis)*np.cos(these_thetas + pi/4))*1.2)
-    coverage/=np.nanmax(coverage)
-
-    coverage = interpo(these_thetas, these_phis, grid=False)/yield_final
-
-
-    significance = coverage
-
-    significance[bad] = 0.0
-    significance[np.isnan(significance)] = 0.0
 
     pzenith = (pi/2)-np.arctan(prez/np.sqrt(prex**2 + prey**2))
     pazimuth =np.arctan2(prey, prex)
+
+    significance = interpo(xpos,ypos, these_thetas, these_phis)
 
     #sig_bin = np.histogram2d(pzenith, pazimuth, bins=(pmt_costheta, pmt_azimuth), weights=significance)[0]
     #counts =  np.histogram2d(pzenith, pazimuth, bins=(pmt_costheta, pmt_azimuth), weights=np.ones_like(significance))[0]
@@ -306,7 +287,7 @@ if __name__=="__main__":
     #process("./data/250mg_z_latest.dat", "250mG_z") #)
     #process("./data/250mg_z_latest.dat", "250mG_z",normy=baseline)
 
-    process("./data/500ymG_hemi_shuffle_0.5ev.dat", "500mG_y")
+    #process("./data/500ymG_hemi_shuffle_0.5ev.dat", "500mG_y")
     #process("./data/600mGxz_WIDE.dat", "600mG_xz")# )
     #process("./data/600mGy_WIDE.dat", "600mG_y")# )
     #process("./data/600mGx_WIDE.dat", "600mG_x")# )
